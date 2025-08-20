@@ -1,163 +1,56 @@
-# Get-M365CopilotReadiness.ps1
+# M365 Copilot Readiness Assessment
 
-**Checks a tenant’s technical readiness for Copilot f### SharePoint Online / OneDrive
+PowerShell script that quickly collects key configuration information from Exchange Online, SharePoint Online, OneDrive, Microsoft Teams, and **Entra ID** to assess Microsoft 365 Copilot deployment readiness.
 
-* Derives SPO Admin URL from the tenant's `*.onmicrosoft.com` domain when not provided, or uses `-SPOAdminUrl` if passed.
-* Connects to SPO Admin and retrieves:
-
-  * `Get-SPOTenant` **tenant properties** (e.g., OneDrive storage quota, sharing/CA policy indicators, etc.)
-  * **Enhanced sharing settings with descriptions**: Sharing capabilities, link types, expiration policies with clear explanations
-  * Total SPO sites & **OneDrive** site count (filtered by URL/template)
-  * **Content type synchronization settings**
-  * **Teams integration settings**
-  * **Search and language configurations**
-  * **Site-level restrictions and policies**
-* Emits:
-
-  * `SharePointOnline.Connected`, `AdminUrl`, `TenantProperties`, `TotalSites`, `OneDriveSites`, `SharingSettings`, `RacPolicySites`, `RestrictedSites`, `SearchSettings`, `LanguageSettings`, `ContentTypeSync`, `TeamsSettings`, `Notes`
-
-> Readiness flag derived: **`OneDrive_Provisioned`** (Pass if any OneDrive sites found). 365** by connecting (best effort) to Microsoft Graph, Exchange Online, SharePoint Online, and Microsoft Teams, then outputting a JSON report and a human-readable HTML summary.
-
-* **Outputs:**
-
-  * `copi> **Notes for contributors**
->
-> * This script currently performs **readiness heuristics** with a "best effort" connection model and light signals. Pull requests that add deeper checks (e.g., detailed Teams/EXO settings, network egress validation, Purview/Defender signals, richer licensing mapping) are welcome—please keep output backward-compatible or gate behind a switch.
-> * **Recent additions:** The script now includes comprehensive Entra ID external sharing and guest user policy collection to provide insights into tenant-level external collaboration settings that may impact Copilot usage and security posture.
-> * **Enhanced reporting format (August 2025):** All configuration settings now include descriptive explanations alongside their values, making reports more administrator-friendly. The HTML output features three-column tables (Setting, Value, Description) and contextual guidance about Copilot impact.
-> * **Improved error handling:** Enhanced graceful handling of policy endpoints that may not be available in all tenant configurations, with clear informational messaging instead of confusing warnings.
-> * If you contribute app-only authentication support, add a separate section in this README with Azure AD app registration steps and exact Graph permissions (Application) required.readiness.json`
-  * `copilot-readiness.html`
-
-> References used in the script:
->
-> * Requirements: [https://learn.microsoft.com/en-us/copilot/microsoft-365/microsoft-365-copilot-requirements](https://learn.microsoft.com/en-us/copilot/microsoft-365/microsoft-365-copilot-requirements)
-> * Enablement:  [https://learn.microsoft.com/en-us/copilot/microsoft-365/microsoft-365-copilot-enablement-resources](https://learn.microsoft.com/en-us/copilot/microsoft-365/microsoft-365-copilot-enablement-resources)
-> * Licensing:   [https://learn.microsoft.com/en-us/copilot/microsoft-365/microsoft-365-copilot-licensing](https://learn.microsoft.com/en-us/copilot/microsoft-365/microsoft-365-copilot-licensing)
+**New in latest version**: Enhanced with Entra ID external sharing settings and administrator-friendly reporting with clear descriptions for every configuration item.
 
 ---
 
-## Table of Contents
-
-* [What the script does](#what-the-script-does)
-* [Per-service details](#per-service-details)
-* [Prerequisites](#prerequisites)
-* [Required permissions / roles](#required-permissions--roles)
-* [Parameters](#parameters)
-* [Installation & usage](#installation--usage)
-* [Output files & schema](#output-files--schema)
-* [Troubleshooting](#troubleshooting)
-* [Author & date](#author--date)
-
----
-
-## What the script does
-
-1. **Module bootstrap (optional):** Installs and imports required PowerShell modules for the current user scope unless `-SkipModuleInstall` is specified.
-2. **Service connections (best effort):**
-
-   * Microsoft Graph (with read-only scopes)
-   * Exchange Online
-   * SharePoint Online (SPO Admin)
-   * Microsoft Teams
-3. **Signals collection aligned to Microsoft Learn guidance:**
-
-   * **Licensing & eligibility** for Copilot (base license patterns + Copilot SKUs)
-   * **Exchange Online** mailbox presence (basic signal for “hosted in EXO”)
-   * **SharePoint/OneDrive** tenant properties & counts (incl. OneDrive site count)
-   * **Teams** connectivity check
-   * **Tenant/Org** basics from Graph (display name, domains, etc.)
-4. **Report generation:** Writes a **structured JSON** payload and an **HTML** summary dashboard with readiness flags, captured errors, and basic guidance links.
-
----
-
-## Per-service details
-
-### Microsoft Graph
-
-* Connects with read-only scopes to query **organization** details, **subscribed SKUs**, and **Entra ID policies**.
-* **Scopes requested:**
-  `Organization.Read.All`, `Directory.Read.All`, `User.Read.All`, `ExternalItem.Read.All`, `Sites.Read.All`, `ExternalConnection.Read.All`, `Policy.Read.All`
-
-### Licensing signals
-
-* Pulls **Subscribed SKUs** and identifies:
-
-  * **Eligible base licenses** (e.g., Microsoft 365 E3/E5, Office 365 E3/E5; pattern-based detection)
-  * Presence of **Copilot-related SKUs** (inspects service plans that match `COPILOT` / `CPI`)
-* Emits:
-
-  * `Licensing.CopilotSkuPresent` (boolean)
-  * `Licensing.CopilotSkus` (subset of SKUs relevant to Copilot)
-  * `Licensing.EligibleBaseLicenses` (subset of base SKUs)
-  * `Licensing.AllRelevantSkus` (merged view of base + Copilot SKUs with counts)
+## What it checks
 
 ### Exchange Online
+* Mailbox inventory and basic configuration
+* Connection validation and permissions
 
-* Attempts EXO connection and queries user mailboxes (lightweight check).
-* Emits:
-
-  * `ExchangeOnline.Connected` (boolean)
-  * `ExchangeOnline.UserMailboxCount` (int, if accessible)
-  * `ExchangeOnline.Notes` (errors or connection notes)
-
-> Readiness flag derived: **`EXO_PrimaryMailboxHostedInEXO`** (heuristic: at least one user mailbox returned).
-
-### SharePoint Online / OneDrive
-
-* Derives SPO Admin URL from the tenant’s `*.onmicrosoft.com` domain when not provided, or uses `-SPOAdminUrl` if passed.
-* Connects to SPO Admin and retrieves:
-
-  * `Get-SPOTenant` **tenant properties** (e.g., OneDrive storage quota, sharing/CA policy indicators, etc.)
-  * Total SPO sites & **OneDrive** site count (filtered by URL/template)
-* Emits:
-
-  * `SharePointOnline.Connected`, `AdminUrl`, `TenantProperties`, `TotalSites`, `OneDriveSites`, `SharingSettings`, `RacPolicySites`, `RestrictedSites`, `Notes`
-
-> Readiness flag derived: **`OneDrive_Provisioned`** (Pass if any OneDrive sites found).
+### SharePoint Online
+* Tenant sharing settings with detailed descriptions
+* Site collection inventory (including OneDrive)
+* Restricted Access Control (RAC) policies
+* Default sharing link configurations
+* Anonymous access settings
 
 ### Microsoft Teams
+* Connection validation
+* Teams admin permissions verification
 
-* Attempts a Teams connection to validate access (no heavy data collection).
-* Emits:
+### Entra ID (Azure AD) - **NEW ENHANCED**
+* **Authorization Policy**: External user invitation settings and default permissions
+* **External Identities Policy**: Guest user lifecycle management (where available)
+* **Guest User Settings**: Access restrictions and B2B collaboration controls  
+* **Cross-Tenant Access Policy**: Service defaults and custom configurations
+* **Guest User Statistics**: Current guest user count and impact assessment
+* **Organization Settings**: Contact sync and directory feature configurations
 
-  * `Teams.Connected` (boolean)
-
-### Entra ID External Sharing & Guest Settings
-
-* Retrieves tenant-level external collaboration and guest user policies that may impact Copilot usage and security.
-* **Enhanced with descriptive explanations**: Each setting includes both the value and a clear description of what it means and its impact on Copilot.
-* Collects:
-
-  * **Authorization Policy:** Guest invitation settings, default user permissions, email verification settings
-  * **External Identities Policy:** External identity management and data removal policies
-  * **Guest User Settings:** Guest user role configurations and statistics
-  * **Cross-Tenant Access Policy:** Cross-tenant collaboration settings and allowed cloud endpoints
-  * **Organization Settings:** Privacy profile, notification email configurations
-  * **Guest User Statistics:** Count and impact assessment of guest users in the tenant
-* **Admin-friendly format**: All settings include contextual descriptions explaining their significance for Copilot readiness and security
-* Emits:
-
-  * `EntraId.Connected`, `AuthorizationPolicy`, `ExternalSharingSettings`, `GuestUserSettings`, `CrossTenantAccessPolicy`, `GuestUserStatistics`, `OrganizationSettings`, `Notes`
-
-> Readiness flag derived: **`EntraId_ExternalSharingConfigured`** (Pass if authorization policies are accessible and configured).
+### Licensing & Graph
+* Microsoft Graph connection with required scopes
+* Copilot license detection and SKU mapping
+* Base license eligibility verification
+* Comprehensive license inventory
 
 ---
 
-## Enhanced Reporting Features
-
-### Administrator-Friendly Output
+## Enhanced Administrator-Friendly Reporting
 
 The script now provides enhanced, administrator-friendly reporting with the following improvements:
 
-* **Descriptive Format**: All configuration settings include both the actual value and a clear description of what it means
-* **Copilot Context**: Explanations of how each setting impacts Copilot usage and security
-* **Three-Column Tables**: HTML output shows Setting, Value, and Description for maximum clarity
-* **Impact Assessment**: Clear indicators of security considerations and data governance implications
+### Key Benefits
+* **No Technical Guessing**: Every setting includes plain-language explanations
+* **Decision Support**: Descriptions help administrators make informed policy decisions
+* **Security Awareness**: Clear identification of settings that affect external access
+* **Copilot Readiness**: Understand how configurations impact Copilot functionality
 
-### Value-Description Structure
-
-Settings are now reported in an enhanced format:
+### Descriptive Format
+All configuration settings include both the actual value and a clear description of what it means:
 
 ```json
 "AllowInvitesFrom": {
@@ -166,20 +59,18 @@ Settings are now reported in an enhanced format:
 }
 ```
 
-### Key Benefits
-
-* **No Technical Guessing**: Every setting includes plain-language explanations
-* **Decision Support**: Descriptions help administrators make informed policy decisions
-* **Security Awareness**: Clear identification of settings that affect external access
-* **Copilot Readiness**: Understand how configurations impact Copilot functionality
+### Enhanced HTML Output
+* **Three-Column Tables**: Setting, Value, and Description for maximum clarity
+* **Copilot Context**: Explanations of how each setting impacts Copilot usage and security
+* **Impact Assessment**: Clear indicators of security considerations and data governance implications
 
 ---
 
 ## Prerequisites
 
 * **PowerShell:** Windows PowerShell 5.1 or PowerShell 7.x
-* **Network access** to Microsoft 365 endpoints for Graph, Exchange Online, SharePoint Online, and Teams.
-* **Interactive sign-in** capability (unless you adapt for app-only auth; this script is written for interactive admin usage).
+* **Network access** to Microsoft 365 endpoints for Graph, Exchange Online, SharePoint Online, and Teams
+* **Interactive sign-in** capability (unless you adapt for app-only auth; this script is written for interactive admin usage)
 
 ### PowerShell modules (auto-installed unless `-SkipModuleInstall`)
 
@@ -192,7 +83,7 @@ Settings are now reported in an enhanced format:
 | MicrosoftTeams                               | 5.6.0            |
 | Microsoft.Online.SharePoint.PowerShell       | 16.0.24908.12000 |
 
-> The script imports these modules and will attempt installation for CurrentUser scope if they’re missing.
+> The script imports these modules and will attempt installation for CurrentUser scope if they're missing.
 
 ---
 
@@ -202,9 +93,9 @@ Settings are now reported in an enhanced format:
 
 * **Graph scopes:**
   `Organization.Read.All`, `Directory.Read.All`, `User.Read.All`, `ExternalItem.Read.All`, `Sites.Read.All`, `ExternalConnection.Read.All`, `Policy.Read.All`
-* **Exchange Online:** permissions sufficient to run **`Get-EXOMailbox`** (e.g., **View-Only Recipients** or higher; many tenants grant this via EXO/Exchange admin roles).
-* **SharePoint Online:** **SharePoint Administrator** (or **Global Administrator**) is typically required for **`Get-SPOTenant`**.
-* **Microsoft Teams:** Teams admin-level read permissions are safest; this script only verifies connection.
+* **Exchange Online:** permissions sufficient to run **`Get-EXOMailbox`** (e.g., **View-Only Recipients** or higher; many tenants grant this via EXO/Exchange admin roles)
+* **SharePoint Online:** **SharePoint Administrator** (or **Global Administrator**) is typically required for **`Get-SPOTenant`**
+* **Microsoft Teams:** Teams admin-level read permissions are safest; this script only verifies connection
 
 > If your account lacks a given role, the script continues where possible and records a connection failure and/or data errors in the final report.
 
@@ -224,7 +115,7 @@ PARAMETERS
 
 -SPOAdminUrl <String>
     Optional explicit SharePoint Admin URL (e.g., https://contoso-admin.sharepoint.com).
-    If omitted, the script tries to derive it from your tenant’s *.onmicrosoft.com domain.
+    If omitted, the script tries to derive it from your tenant's *.onmicrosoft.com domain.
 ```
 
 ---
@@ -254,7 +145,7 @@ cd <your-repo>
 .\Get-M365CopilotReadiness.ps1 -SkipModuleInstall
 ```
 
-> You’ll be prompted to sign in for each service connection (Graph, EXO, SPO, Teams). If a connection fails, the script logs the error and continues.
+> You'll be prompted to sign in for each service connection (Graph, EXO, SPO, Teams). If a connection fails, the script logs the error and continues.
 
 ---
 
@@ -361,21 +252,23 @@ High-level structure:
 
 ### `copilot-readiness.html`
 
-* A compact, readable dashboard summarizing:
+A compact, readable dashboard summarizing:
 
-  * Connection status per service
-  * Licensing highlights (base/Copilot)
-  * Basic Exchange / SPO / OneDrive signals
-  * **Enhanced Entra ID external sharing and guest user configuration with descriptions**
-  * **Improved SharePoint sharing settings with contextual explanations**
-  * **Three-column tables showing Setting, Value, and Description for better admin understanding**
-  * **Contextual guidance about how settings impact Copilot usage and security**
-  * Links to Microsoft Learn references
-  * Error/notes section (if any)
+* Connection status per service
+* Licensing highlights (base/Copilot)
+* Basic Exchange / SPO / OneDrive signals
+* **Enhanced Entra ID external sharing and guest user configuration with descriptions**
+* **Improved SharePoint sharing settings with contextual explanations**
+* **Three-column tables showing Setting, Value, and Description for better admin understanding**
+* **Contextual guidance about how settings impact Copilot usage and security**
+* Links to Microsoft Learn references
+* Error/notes section (if any)
 
 ---
 
 ## Troubleshooting
+
+### Common Issues
 
 * **Graph connection fails / consent prompts:**
   Ensure your account can grant or has admin consent for the read-only scopes listed above. Retry after consent or run as an admin with sufficient rights.
@@ -407,7 +300,7 @@ High-level structure:
 
 ---
 
-> **Notes for contributors**
->
-> * This script currently performs **readiness heuristics** with a “best effort” connection model and light signals. Pull requests that add deeper checks (e.g., detailed Teams/EXO settings, network egress validation, Purview/Defender signals, richer licensing mapping) are welcome—please keep output backward-compatible or gate behind a switch.
-> * If you contribute app-only authentication support, add a separate section in this README with Azure AD app registration steps and exact Graph permissions (Application) required.
+## Notes for contributors
+
+* This script currently performs **readiness heuristics** with a "best effort" connection model and light signals. Pull requests that add deeper checks (e.g., detailed Teams/EXO settings, network egress validation, Purview/Defender signals, richer licensing mapping) are welcome—please keep output backward-compatible or gate behind a switch.
+* If you contribute app-only authentication support, add a separate section in this README with Azure AD app registration steps and exact Graph permissions (Application) required.
