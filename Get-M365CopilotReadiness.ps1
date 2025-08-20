@@ -1310,9 +1310,6 @@ $(
 $(($report.LearnReferences | ForEach-Object { "<li><a href='$_'>$_</a></li>" }) -join "`n")
 </ul>
 
-<h2>Raw JSON</h2>
-<pre>$([System.Web.HttpUtility]::HtmlEncode(($report | ConvertTo-Json -Depth 8)))</pre>
-
 <h2>Warnings</h2>
 <pre>$([System.Web.HttpUtility]::HtmlEncode(($report.Warnings -join "`n")))</pre>
 
