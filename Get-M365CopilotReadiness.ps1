@@ -159,7 +159,8 @@ $graphScopes = @(
     'User.Read.All',
     'ExternalItem.Read.All',
     'Sites.Read.All',
-    'ExternalConnection.Read.All'
+    'ExternalConnection.Read.All',
+    'Policy.Read.All'
 )
 $graphTimeoutSec = 60
 $graphStart = Get-Date
@@ -472,14 +473,38 @@ try {
 
       # Get sharing settings
       $spoInfo.SharingSettings = [ordered]@{
-        TenantSharingLevel     = $tenantProps.SharingCapability
-        DefaultSharingLinkType = $tenantProps.DefaultSharingLinkType
-        FileAnonymousLinkType  = $tenantProps.FileAnonymousLinkType
-        FolderAnonymousLinkType= $tenantProps.FolderAnonymousLinkType
-        RequireAnonymousLinksExpireInDays = $tenantProps.RequireAnonymousLinksExpireInDays
-        ExternalUserExpirationRequired = $tenantProps.ExternalUserExpirationRequired
-        ExternalUserExpireInDays = $tenantProps.ExternalUserExpireInDays
-        PreventExternalUsersFromResharing = $tenantProps.PreventExternalUsersFromResharing
+        TenantSharingLevel     = @{
+            Value = $tenantProps.SharingCapability
+            Description = "Tenant-wide sharing level (Disabled, ExternalUserSharingOnly, ExistingExternalUserSharingOnly, ExternalUserAndGuestSharing)"
+        }
+        DefaultSharingLinkType = @{
+            Value = $tenantProps.DefaultSharingLinkType
+            Description = "Default sharing link type for new sharing links (None, Direct, Internal, AnonymousAccess)"
+        }
+        FileAnonymousLinkType  = @{
+            Value = $tenantProps.FileAnonymousLinkType
+            Description = "Anonymous link permissions for files (None, View, Edit)"
+        }
+        FolderAnonymousLinkType= @{
+            Value = $tenantProps.FolderAnonymousLinkType
+            Description = "Anonymous link permissions for folders (None, View, Edit)"
+        }
+        RequireAnonymousLinksExpireInDays = @{
+            Value = $tenantProps.RequireAnonymousLinksExpireInDays
+            Description = "Days after which anonymous links expire (0 = no expiration)"
+        }
+        ExternalUserExpirationRequired = @{
+            Value = $tenantProps.ExternalUserExpirationRequired
+            Description = "Whether external user invitations must have expiration dates"
+        }
+        ExternalUserExpireInDays = @{
+            Value = $tenantProps.ExternalUserExpireInDays
+            Description = "Default expiration period for external user access (days)"
+        }
+        PreventExternalUsersFromResharing = @{
+            Value = $tenantProps.PreventExternalUsersFromResharing
+            Description = "Whether external users are prevented from resharing content"
+        }
       }
 
       # Add new sections for Search, Language, Content Type, and Teams settings
@@ -678,6 +703,191 @@ try {
 # Teams signals (connection only)
 $teamsInfo = [ordered]@{ Connected=$ctx.Teams }
 
+# Entra ID external sharing and guest settings
+# This section collects tenant-level configuration for external sharing, guest users,
+# and cross-tenant access policies that may impact Copilot for M365 usage and security
+$entraIdInfo = [ordered]@{ 
+    Connected = $ctx.Graph
+    ExternalSharingSettings = $null
+    GuestUserSettings = $null
+    AuthorizationPolicy = $null
+    Notes = $null
+}
+
+try {
+    if ($ctx.Graph) {
+        Write-Info "Collecting Entra ID external sharing and guest settings..."
+        
+        # Get Authorization Policy (contains guest invitation settings)
+        try {
+            $authzPolicy = Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/v1.0/policies/authorizationPolicy" -ErrorAction Stop
+            
+            $entraIdInfo.AuthorizationPolicy = [ordered]@{
+                AllowInvitesFrom = @{
+                    Value = $authzPolicy.allowInvitesFrom
+                    Description = "Who can invite external users (none, adminsAndGuestInviters, adminsGuestInvitersAndAllMembers, everyone)"
+                }
+                AllowedToSignUpEmailBasedSubscriptions = @{
+                    Value = $authzPolicy.allowedToSignUpEmailBasedSubscriptions
+                    Description = "Whether users can sign up for email-based subscriptions"
+                }
+                AllowedToUseSSPR = @{
+                    Value = $authzPolicy.allowedToUseSSPR
+                    Description = "Whether users can use Self-Service Password Reset"
+                }
+                AllowEmailVerifiedUsersToJoinOrganization = @{
+                    Value = $authzPolicy.allowEmailVerifiedUsersToJoinOrganization
+                    Description = "Whether email-verified users can join the organization without invitation"
+                }
+                BlockMsolPowerShell = @{
+                    Value = $authzPolicy.blockMsolPowerShell
+                    Description = "Whether MSOL PowerShell access is blocked for users"
+                }
+                DefaultUserRolePermissions = [ordered]@{
+                    AllowedToCreateApps = @{
+                        Value = $authzPolicy.defaultUserRolePermissions.allowedToCreateApps
+                        Description = "Whether users can create applications"
+                    }
+                    AllowedToCreateSecurityGroups = @{
+                        Value = $authzPolicy.defaultUserRolePermissions.allowedToCreateSecurityGroups
+                        Description = "Whether users can create security groups"
+                    }
+                    AllowedToCreateTenants = @{
+                        Value = $authzPolicy.defaultUserRolePermissions.allowedToCreateTenants
+                        Description = "Whether users can create new tenants"
+                    }
+                    AllowedToReadOtherUsers = @{
+                        Value = $authzPolicy.defaultUserRolePermissions.allowedToReadOtherUsers
+                        Description = "Whether users can read other users' profiles"
+                    }
+                    AllowedToReadBitlockerKeysForOwnedDevice = @{
+                        Value = $authzPolicy.defaultUserRolePermissions.allowedToReadBitlockerKeysForOwnedDevice
+                        Description = "Whether users can read BitLocker recovery keys for their own devices"
+                    }
+                }
+            }
+            Write-Info "Retrieved authorization policy settings"
+        } catch {
+            Write-Warn "Failed to retrieve authorization policy: $($_.Exception.Message)"
+            $entraIdInfo.AuthorizationPolicy = "Error retrieving policy"
+        }
+
+        # Get External Identities Policy
+        try {
+            $extIdPolicy = Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/v1.0/policies/externalIdentitiesPolicy" -ErrorAction Stop
+            
+            $entraIdInfo.ExternalSharingSettings = [ordered]@{
+                AllowExternalIdentitiesToLeave = @{
+                    Value = $extIdPolicy.allowExternalIdentitiesToLeave
+                    Description = "Whether external users can leave the organization on their own"
+                }
+                AllowDeletedIdentitiesDataRemoval = @{
+                    Value = $extIdPolicy.allowDeletedIdentitiesDataRemoval
+                    Description = "Whether data is automatically removed when external identities are deleted"
+                }
+            }
+            Write-Info "Retrieved external identities policy settings"
+        } catch {
+            Write-Info "External identities policy not available in this tenant: $($_.Exception.Message)"
+            $entraIdInfo.ExternalSharingSettings = [ordered]@{
+                PolicyAvailable = $false
+                Note = "External Identities Policy not available - may require specific licensing or tenant configuration"
+            }
+        }
+
+        # Get Guest User Access Settings from Organization settings
+        try {
+            if ($org) {
+                # Try to get more comprehensive guest and external settings from the organization object
+                $entraIdInfo.GuestUserSettings = [ordered]@{
+                    GuestUserRoleId = @{
+                        Value = if ($org.GuestUserRoleId) { $org.GuestUserRoleId } else { "Not configured" }
+                        Description = "Role template ID assigned to guest users (controls their permissions)"
+                    }
+                }
+                
+                # Try to get additional organization-level external collaboration settings
+                $entraIdInfo.OrganizationSettings = [ordered]@{
+                    PrivacyProfile = @{
+                        Value = if ($org.PrivacyProfile) { "Configured" } else { "Not configured" }
+                        Description = "Whether organization has configured privacy contact information"
+                    }
+                    MarketingNotificationEmails = @{
+                        Value = if ($org.MarketingNotificationEmails) { $org.MarketingNotificationEmails -join ', ' } else { "None specified" }
+                        Description = "Email addresses for marketing notifications from Microsoft"
+                    }
+                    SecurityComplianceNotificationMails = @{
+                        Value = if ($org.SecurityComplianceNotificationMails) { $org.SecurityComplianceNotificationMails -join ', ' } else { "None specified" }
+                        Description = "Email addresses for security and compliance notifications"
+                    }
+                    TechnicalNotificationMails = @{
+                        Value = if ($org.TechnicalNotificationMails) { $org.TechnicalNotificationMails -join ', ' } else { "None specified" }
+                        Description = "Email addresses for technical notifications about the tenant"
+                    }
+                }
+                
+                Write-Info "Retrieved guest user and organization settings"
+            }
+        } catch {
+            Write-Warn "Failed to retrieve guest user settings: $($_.Exception.Message)"
+            $entraIdInfo.GuestUserSettings = "Error retrieving settings"
+        }
+
+        # Try to get Cross-tenant Access Policy (if available)
+        try {
+            $crossTenantPolicy = Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/v1.0/policies/crossTenantAccessPolicy" -ErrorAction Stop
+            
+            $entraIdInfo.CrossTenantAccessPolicy = [ordered]@{
+                AllowedCloudEndpoints = @{
+                    Value = if ($crossTenantPolicy.allowedCloudEndpoints) { $crossTenantPolicy.allowedCloudEndpoints -join ', ' } else { "None specified" }
+                    Description = "Cloud endpoints allowed for cross-tenant access"
+                }
+                IsServiceDefault = @{
+                    Value = $crossTenantPolicy.isServiceDefault
+                    Description = "Whether this policy uses service defaults (true) or has custom configuration (false)"
+                }
+            }
+            Write-Info "Retrieved cross-tenant access policy"
+        } catch {
+            Write-Info "Cross-tenant access policy not available: $($_.Exception.Message)"
+            $entraIdInfo.CrossTenantAccessPolicy = [ordered]@{
+                PolicyAvailable = $false
+                Note = "Cross-tenant access policy not available - may not be configured or requires specific permissions"
+            }
+        }
+
+        # Try to get additional guest and external user statistics
+        try {
+            Write-Info "Collecting guest user statistics..."
+            $guestUsers = Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/v1.0/users?`$filter=userType eq 'Guest'&`$count=true&`$top=1" -Headers @{ ConsistencyLevel = "eventual" } -ErrorAction Stop
+            
+            $entraIdInfo.GuestUserStatistics = [ordered]@{
+                TotalGuestUsers = @{
+                    Value = if ($guestUsers.'@odata.count') { $guestUsers.'@odata.count' } else { 0 }
+                    Description = "Number of guest users currently in the tenant"
+                }
+                Impact = @{
+                    Value = if ($guestUsers.'@odata.count' -gt 0) { "External users present" } else { "No external users" }
+                    Description = "Potential impact on Copilot data access and security considerations"
+                }
+            }
+            Write-Info "Found $($entraIdInfo.GuestUserStatistics.TotalGuestUsers) guest users"
+        } catch {
+            Write-Info "Could not retrieve guest user count: $($_.Exception.Message)"
+            $entraIdInfo.GuestUserStatistics = [ordered]@{
+                TotalGuestUsers = "Unable to retrieve"
+                Note = "Requires User.Read.All permission"
+            }
+        }
+
+    } else {
+        $entraIdInfo.Notes = "Could not connect to Microsoft Graph."
+    }
+} catch {
+    $errors += "Entra ID external sharing query failed: $($_.Exception.Message)"
+    Write-Warn "Error retrieving Entra ID external sharing settings: $($_.Exception.Message)"
+}
+
 # Readiness evaluation (lightweight heuristics)
 function ToBoolLabel([bool]$b) { 
     if ($null -eq $b) { return 'Gap' }  # Handle null case
@@ -692,6 +902,9 @@ $readiness = [ordered]@{
     OneDrive_Provisioned             = if ($spoInfo.OneDriveSites -gt 0) { 'Pass' } else { if($spoInfo.Connected){'Gap'} else {'Unknown'} }
     SPO_TenantConnected              = ToBoolLabel([bool]$spoInfo.Connected)
     Teams_ServiceConnected           = ToBoolLabel([bool]$teamsInfo.Connected)
+    EntraId_ExternalSharingConfigured = if ($entraIdInfo.Connected) { 
+        if ($entraIdInfo.AuthorizationPolicy -and $entraIdInfo.AuthorizationPolicy -ne "Error retrieving policy") { 'Pass' } else { 'Gap' }
+    } else { 'Unknown' }
     ManualChecks                     = @(
       [ordered]@{
         Name    = 'Microsoft 365 Apps (channel/version) & network endpoints'
@@ -730,6 +943,7 @@ $report = [ordered]@{
     ExchangeOnline   = $exoInfo
     SharePointOnline = $spoInfo
     Teams            = $teamsInfo
+    EntraId          = $entraIdInfo
     Graph            = [ordered]@{ Connected=$ctx.Graph; Scopes=$graphScopes }
   }
   Readiness          = $readiness
@@ -781,7 +995,8 @@ $summaryRows = @(
     "Exchange Online (primary mailbox in EXO)|$(Get-StatusBadge $report.Readiness.EXO_PrimaryMailboxHostedInEXO)",
     "OneDrive provisioned (personal sites exist)|$(Get-StatusBadge $report.Readiness.OneDrive_Provisioned)",
     "SharePoint Online tenant connected|$(Get-StatusBadge $report.Readiness.SPO_TenantConnected)",
-    "Microsoft Teams connected|$(Get-StatusBadge $report.Readiness.Teams_ServiceConnected)"
+    "Microsoft Teams connected|$(Get-StatusBadge $report.Readiness.Teams_ServiceConnected)",
+    "Entra ID external sharing configured|$(Get-StatusBadge $report.Readiness.EntraId_ExternalSharingConfigured)"
 ) | ForEach-Object { 
     $cols = $_ -split '\|'
     "<tr><td>$($cols[0])</td><td>$($cols[1])</td></tr>"
@@ -859,15 +1074,21 @@ $(if ($report.Licensing.AllRelevantSkus) {
 </table>
 
 <h4>Sharing Settings</h4>
+<p class="small"><strong>Impact on Copilot:</strong> These settings determine how content can be shared externally. 
+More permissive sharing may increase the scope of content accessible to Copilot through external collaborations.</p>
 <table>
-<tr><th>Setting</th><th>Value</th></tr>
+<tr><th>Setting</th><th>Value</th><th>Description</th></tr>
 $(
     if ($report.Services.SharePointOnline.SharingSettings) {
         $report.Services.SharePointOnline.SharingSettings.GetEnumerator() | ForEach-Object {
-            "<tr><td>$($_.Key)</td><td>$($_.Value)</td></tr>"
+            if ($_.Value.GetType().Name -eq 'Hashtable') {
+                "<tr><td>$($_.Key)</td><td>$($_.Value.Value)</td><td>$($_.Value.Description)</td></tr>"
+            } else {
+                "<tr><td>$($_.Key)</td><td>$($_.Value)</td><td>Legacy format - consider updating</td></tr>"
+            }
         }
     } else {
-        "<tr><td colspan='2'>No sharing settings available</td></tr>"
+        "<tr><td colspan='3'>No sharing settings available</td></tr>"
     }
 )
 </table>
@@ -954,6 +1175,132 @@ $(
         }
     } else {
         "<tr><td colspan='3'>No sites with restricted content discovery found</td></tr>"
+    }
+)
+</table>
+
+<h3>Entra ID External Sharing & Guest Settings</h3>
+<p class="small"><strong>Impact on Copilot:</strong> These settings control how external users can be invited and what permissions they have. 
+External users may have access to content that Copilot can surface, so understanding guest access patterns is important for data governance.</p>
+<table>
+<tr><th>Connected</th><td>$($report.Services.EntraId.Connected)</td></tr>
+<tr><th>Notes</th><td>$($report.Services.EntraId.Notes)</td></tr>
+</table>
+
+<h4>Authorization Policy (Guest Invitations)</h4>
+<table>
+<tr><th>Setting</th><th>Value</th><th>Description</th></tr>
+$(
+    if ($report.Services.EntraId.AuthorizationPolicy -and $report.Services.EntraId.AuthorizationPolicy -ne "Error retrieving policy") {
+        $report.Services.EntraId.AuthorizationPolicy.GetEnumerator() | ForEach-Object {
+            if ($_.Key -eq "DefaultUserRolePermissions") {
+                $_.Value.GetEnumerator() | ForEach-Object {
+                    if ($_.Value.GetType().Name -eq 'Hashtable') {
+                        "<tr><td>DefaultUserRole - $($_.Key)</td><td>$($_.Value.Value)</td><td>$($_.Value.Description)</td></tr>"
+                    } else {
+                        "<tr><td>DefaultUserRole - $($_.Key)</td><td>$($_.Value)</td><td>Legacy format</td></tr>"
+                    }
+                }
+            } else {
+                if ($_.Value.GetType().Name -eq 'Hashtable') {
+                    "<tr><td>$($_.Key)</td><td>$($_.Value.Value)</td><td>$($_.Value.Description)</td></tr>"
+                } else {
+                    "<tr><td>$($_.Key)</td><td>$($_.Value)</td><td>Legacy format</td></tr>"
+                }
+            }
+        }
+    } else {
+        "<tr><td colspan='3'>$($report.Services.EntraId.AuthorizationPolicy)</td></tr>"
+    }
+)
+</table>
+
+<h4>External Identities Policy</h4>
+<table>
+<tr><th>Setting</th><th>Value</th><th>Description</th></tr>
+$(
+    if ($report.Services.EntraId.ExternalSharingSettings -and $report.Services.EntraId.ExternalSharingSettings -ne "Error retrieving policy") {
+        $report.Services.EntraId.ExternalSharingSettings.GetEnumerator() | ForEach-Object {
+            if ($_.Value.GetType().Name -eq 'Hashtable') {
+                "<tr><td>$($_.Key)</td><td>$($_.Value.Value)</td><td>$($_.Value.Description)</td></tr>"
+            } else {
+                "<tr><td>$($_.Key)</td><td>$($_.Value)</td><td>Legacy format</td></tr>"
+            }
+        }
+    } else {
+        "<tr><td colspan='3'>External Identities Policy not available or accessible</td></tr>"
+    }
+)
+</table>
+
+<h4>Guest User Settings</h4>
+<table>
+<tr><th>Setting</th><th>Value</th><th>Description</th></tr>
+$(
+    if ($report.Services.EntraId.GuestUserSettings -and $report.Services.EntraId.GuestUserSettings -ne "Error retrieving settings") {
+        $report.Services.EntraId.GuestUserSettings.GetEnumerator() | ForEach-Object {
+            if ($_.Value.GetType().Name -eq 'Hashtable') {
+                "<tr><td>$($_.Key)</td><td>$($_.Value.Value)</td><td>$($_.Value.Description)</td></tr>"
+            } else {
+                "<tr><td>$($_.Key)</td><td>$($_.Value)</td><td>Legacy format</td></tr>"
+            }
+        }
+    } else {
+        "<tr><td colspan='3'>$($report.Services.EntraId.GuestUserSettings)</td></tr>"
+    }
+)
+</table>
+
+<h4>Cross-Tenant Access Policy</h4>
+<table>
+<tr><th>Setting</th><th>Value</th><th>Description</th></tr>
+$(
+    if ($report.Services.EntraId.CrossTenantAccessPolicy -and $report.Services.EntraId.CrossTenantAccessPolicy.GetType().Name -eq 'OrderedDictionary') {
+        $report.Services.EntraId.CrossTenantAccessPolicy.GetEnumerator() | ForEach-Object {
+            if ($_.Value.GetType().Name -eq 'Hashtable') {
+                "<tr><td>$($_.Key)</td><td>$($_.Value.Value)</td><td>$($_.Value.Description)</td></tr>"
+            } else {
+                "<tr><td>$($_.Key)</td><td>$($_.Value)</td><td>Legacy format</td></tr>"
+            }
+        }
+    } else {
+        "<tr><td colspan='3'>Cross-tenant access policy not available or not configured</td></tr>"
+    }
+)
+</table>
+
+<h4>Organization Settings</h4>
+<table>
+<tr><th>Setting</th><th>Value</th><th>Description</th></tr>
+$(
+    if ($report.Services.EntraId.OrganizationSettings) {
+        $report.Services.EntraId.OrganizationSettings.GetEnumerator() | ForEach-Object {
+            if ($_.Value.GetType().Name -eq 'Hashtable') {
+                "<tr><td>$($_.Key)</td><td>$($_.Value.Value)</td><td>$($_.Value.Description)</td></tr>"
+            } else {
+                "<tr><td>$($_.Key)</td><td>$($_.Value)</td><td>Legacy format</td></tr>"
+            }
+        }
+    } else {
+        "<tr><td colspan='3'>No organization settings available</td></tr>"
+    }
+)
+</table>
+
+<h4>Guest User Statistics</h4>
+<table>
+<tr><th>Metric</th><th>Value</th><th>Description</th></tr>
+$(
+    if ($report.Services.EntraId.GuestUserStatistics) {
+        $report.Services.EntraId.GuestUserStatistics.GetEnumerator() | ForEach-Object {
+            if ($_.Value.GetType().Name -eq 'Hashtable') {
+                "<tr><td>$($_.Key)</td><td>$($_.Value.Value)</td><td>$($_.Value.Description)</td></tr>"
+            } else {
+                "<tr><td>$($_.Key)</td><td>$($_.Value)</td><td>Legacy format</td></tr>"
+            }
+        }
+    } else {
+        "<tr><td colspan='3'>No guest user statistics available</td></tr>"
     }
 )
 </table>
